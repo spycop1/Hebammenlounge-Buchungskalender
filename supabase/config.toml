@@ -1,0 +1,2 @@
+[functions.close-month]
+verify_jwt = true
