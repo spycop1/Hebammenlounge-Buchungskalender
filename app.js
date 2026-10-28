@@ -112,8 +112,36 @@ async function fetchData() {
   [state.rates,state.busy,state.reservations]=results.slice(0,3);
   if(pageAdmin){state.people=results[3] || [];state.monthly=results[4] || [];state.invoices=results[5] || [];state.closedMonths=results[6] || [];}
 }
+// Supabase Magic Links return session credentials in the URL fragment (implicit flow).
+// Remove them from the address bar BEFORE network access or rendering.
+async function consumeMagicLink() {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const search = new URLSearchParams(window.location.search);
+  const callback = hash.has('access_token') || hash.has('error') || search.has('error');
+  if (!callback) return;
+  const accessToken = hash.get('access_token');
+  const refreshToken = hash.get('refresh_token');
+  const expiresIn = Number(hash.get('expires_in'));
+  const authFailed = hash.has('error') || search.has('error');
+  window.history.replaceState(null, '', window.location.pathname);
+  if (authFailed) throw new Error('Der Anmeldelink ist ungültig oder abgelaufen. Bitte einen neuen Link anfordern.');
+  if (!accessToken || !refreshToken || !Number.isFinite(expiresIn) || expiresIn <= 0)
+    throw new Error('Der Anmeldelink war unvollständig. Bitte einen neuen Link anfordern.');
+  const response = await fetch(`${url}/auth/v1/user`, {
+    headers: {'apikey':key, 'Authorization':`Bearer ${accessToken}`}, cache:'no-store'
+  });
+  if (!response.ok) throw new Error('Der Anmeldelink konnte nicht bestätigt werden. Bitte einen neuen Link anfordern.');
+  const user = await response.json();
+  if (!user || !user.id) throw new Error('Die E-Mail-Anmeldung konnte nicht bestätigt werden.');
+  saveSession({access_token:accessToken,refresh_token:refreshToken,expires_in:expiresIn,
+    expires_at:Math.floor(Date.now()/1000)+expiresIn,user});
+  state.otpSent=false;
+  state.message='Anmeldung über E-Mail-Link erfolgreich.';
+  state.error='';
+}
 async function start() {
   if(!ready) { app.innerHTML=`<div class="auth-wrap"><div class="auth-card"><div class="brand"><span class="brand-icon">H</span><span class="brand-text">Hebammen Lounge</span></div><h1>Einrichtung erforderlich</h1><p>Die öffentliche Supabase-Projekt-URL und der Publishable-/Anon-Key fehlen noch in <code>config.js</code>. Bitte zunächst die Anleitung lesen.</p><div class="notice warn">Keinen Secret-, Service-Role- oder MIYA-Schlüssel in GitHub ablegen.</div></div></div>`;return; }
+  try { await consumeMagicLink(); } catch(e) { state.error=problem(e); }
   if(state.session) {
     try { await fetchProfile(); if(state.profile?.active && (!pageAdmin || state.profile.role==='admin')) await fetchData(); }
     catch(e) {state.error=problem(e);if(!state.session)state.profile=null;}
@@ -125,10 +153,10 @@ function notice() {return state.error ? `<div class="notice error" role="alert">
 function loginView() {
   const email=esc(state.otpEmail);
   return `<div class="auth-wrap"><div class="auth-card">${brand()}
-    <div class="eyebrow">${pageAdmin?'Vickys Verwaltung':'Für unsere Kolleginnen'}</div><h1>Willkommen.</h1><p>Melde dich sicher mit einem Einmalcode per E-Mail an. Neue Kolleginnen müssen zuerst freigegeben werden.</p>
+    <div class="eyebrow">${pageAdmin?'Vickys Verwaltung':'Für unsere Kolleginnen'}</div><h1>Willkommen.</h1><p>Melde dich über einen sicheren Link per E-Mail an. Neue Kolleginnen müssen zuerst freigegeben werden.</p>
     ${notice()}
-    ${!state.otpSent ? `<form id="send-otp"><div class="field"><label for="email">E-Mail-Adresse</label><input id="email" name="email" type="email" autocomplete="email" maxlength="250" placeholder="du@beispiel.de" value="${email}" required></div><button class="btn wide" type="submit" ${state.loading?'disabled':''}>Einmalcode zusenden</button></form>` :
-    `<form id="verify-otp"><p class="small">Code gesendet an <strong>${email}</strong></p><div class="field"><label for="token">6-stelligen E-Mail-Code eingeben</label><input id="token" name="token" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="123456" required></div><button class="btn wide" type="submit" ${state.loading?'disabled':''}>Anmelden</button></form><button class="link back" data-action="change-email">Andere E-Mail verwenden</button>`}
+    ${!state.otpSent ? `<form id="send-otp"><div class="field"><label for="email">E-Mail-Adresse</label><input id="email" name="email" type="email" autocomplete="email" maxlength="250" placeholder="du@beispiel.de" value="${email}" required></div><button class="btn wide" type="submit" ${state.loading?'disabled':''}>Anmeldelink anfordern</button></form>` :
+    `<form id="verify-otp"><p class="small">E-Mail gesendet an <strong>${email}</strong>. Öffne den Anmeldelink im Browser. Falls du stattdessen einen Zahlencode erhältst, kannst du ihn hier eingeben.</p><div class="field"><label for="token">6-stelligen E-Mail-Code eingeben</label><input id="token" name="token" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="123456" required></div><button class="btn wide" type="submit" ${state.loading?'disabled':''}>Anmelden</button></form><button class="link back" data-action="change-email">Andere E-Mail verwenden</button>`}
     <div class="footer">Nur für berechtigte Nutzerinnen · Keine Patientinnendaten eingeben.</div>
   </div></div>`;
 }
@@ -154,7 +182,7 @@ function shell() {
   const p=state.profile;
   const initials=p.display_name.split(/\s+/).slice(0,2).map(s=>s[0]||'').join('').toUpperCase();
   return `<div class="shell"><aside class="sidebar">${brand()}${nav()}<div class="side-foot"><strong>Hebammen Lounge</strong><p>Die gesamte Praxis ist eine buchbare Einheit. Zeiten: täglich 08–22 Uhr.</p><span class="pill">${pageAdmin?'Administration':'Kolleginnen-Zugang'}</span></div></aside>
-  <div class="content"><header class="top"><span class="small muted">${pageAdmin?'Verwaltung · Vicky':'Praxisbuchung · Kolleginnen'}</span><div class="who"><span class="avatar">${esc(initials)}</span><div><strong>${esc(p.display_name)}</strong><br><small class="muted">${esc(p.email)}</small></div><button class="btn tiny outline" data-action="logout">Abmelden</button></div></header>
+  <div class="content"><header class="top"><span class="small muted">${pageAdmin?'Verwaltung · Vicky':'Praxisbuchung · Kolleginnen'}</span><div class="who">${!pageAdmin && p.role==='admin' ? '<a class="btn tiny outline" href="./admin.html">Admin-Dashboard</a>' : ''}<span class="avatar">${esc(initials)}</span><div><strong>${esc(p.display_name)}</strong><br><small class="muted">${esc(p.email)}</small></div><button class="btn tiny outline" data-action="logout">Abmelden</button></div></header>
   <main class="page">${notice()}${view()}<footer class="footer">Hebammen Lounge · Buchungen nur nach Anmeldung · Zeitangaben Europe/Berlin · Beträge brutto · Monatsrechnungen per E-Mail nach Vickys Abschluss · MIYA-Daten als CSV</footer></main></div></div>${state.overlay?bookingModal():''}`;
 }
 function view(){ switch(state.section){case 'calendar':return calendarPage();case 'bookings':return bookingsPage();case 'prices':return pricesPage();case 'address':return billingAddressPage();case 'people':return peoplePage();case 'billing':return billingPage();default:return overviewPage();} }
@@ -367,7 +395,7 @@ async function submit(event) {
  event.preventDefault();
  if(form.id==='send-otp') {
    const email=t(new FormData(form).get('email')).trim().toLowerCase();
-   await wrap(async()=>{await postAuth('otp',{email,create_user:true});state.otpEmail=email;state.otpSent=true;},'Code wurde angefordert. Bitte Postfach prüfen.');
+   await wrap(async()=>{await postAuth('otp',{email,create_user:true});state.otpEmail=email;state.otpSent=true;},'E-Mail versendet. Bitte den Anmeldelink öffnen.');
  } else if(form.id==='verify-otp') {
    const token=t(new FormData(form).get('token')).trim();
    await wrap(async()=>{
