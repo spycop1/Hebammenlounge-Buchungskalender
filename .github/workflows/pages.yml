@@ -1,0 +1,43 @@
+name: Deploy Hebammen Lounge (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate frontend syntax
+        run: |
+          node --check app.js
+          node --check config.js
+          # A Supabase publishable key is public. A secret/service_role key must never ship.
+          node tests/check-config.cjs
+          # Only publish these six reviewed static files. SQL and tests stay out of Pages.
+          mkdir -p dist
+          cp index.html admin.html app.js config.js styles.css .nojekyll dist/
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./dist
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
